@@ -1,6 +1,8 @@
 import os
 from typing import BinaryIO
-
+import regex as re
+from collections import Counter
+import multiprocessing as mp
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -48,19 +50,67 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def file_open() :
+# 切分语料，返回预分词计数
+def cut_text(special_tokens: list[str], text : str) -> dict[bytes,int] :
+    # 在specialal tokens处切分文本
+    if special_tokens != [] :
 
-    ## Usage
-    with open("tests/fixtures/tinystories_sample.txt", "rb") as f:
-        num_processes = 4
-        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        escaped = [re.escape(tok) for tok in sorted(special_tokens, key=len, reverse=True)]
+        pattern = "(?:" + "|".join(escaped) + ")"
+        cuttedText = re.split(pattern,text)
+        cuttedText = [p for p in cuttedText if p != ""]
+    # 如果没有special token 原文本即为切分文本
+    else :
+        cuttedText = []
+        cuttedText.append(text)
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    # 拿到切分后文本的每个token
+    tokens = [
+    m.group()
+    for text in cuttedText
+    for m in re.finditer(PAT, text)
+    ]
+    # 编码为utf-8
+    tokens_encoded = []
+    for token in tokens :
+        token_encoded = token.encode("UTF-8")
+        tokens_encoded.append(token_encoded)
+    pretoken_cnt = dict(Counter(tokens_encoded))
 
-        # The following is a serial implementation, but you can parallelize this
-        # by sending each start/end pair to a set of processes.
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
+    return pretoken_cnt
+
+def worker(input_path : str, 
+           start : int, 
+           end : int, 
+           special_tokens :list ) -> dict :
+    
+    with open(input_path,"rb") as f :
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        cuttedChunk = cut_text(special_tokens, chunk)
+        return cuttedChunk
+        
+def pretokenizer(input_path :str, num_processes :int , special_tokens:list[str]) -> dict :
+    # 打开文件，拿到切分边界列表
+    boundaries_list = []
+    with open(input_path, "rb") as f :
+        split_special_tokens = ["<|endoftext|>"]
+    
+        boundaries = find_chunk_boundaries(f, num_processes ,split_special_tokens[0].encode("utf-8"))
+        for start, end in zip(boundaries[:-1], boundaries[1:]) :
+            boundaries_list.append((input_path,start,end,special_tokens))
+
+    # 分发任务给子进程
+    with mp.Pool(processes=num_processes) as pool :
+        result = pool.starmap(worker,boundaries_list)
+    # 统计计数
+    pretoken_count = {}
+    for d in result :
+        for k ,v in d.items() :
+            pretoken_count[k] = pretoken_count.get(k,0) + v
+    
+    return pretoken_count
 
 if __name__ == "__main__" :
-    file_open()
+    # 打开文件，拿到切分边界列表
+    pretokenizer("tests/fixtures/tinystories_sample_5M.txt",4,["<|endoftext|>"])
