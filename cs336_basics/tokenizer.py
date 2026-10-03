@@ -1,7 +1,10 @@
 import regex as re
 from collections import Counter,defaultdict
 import os
+import json
+
 from cs336_basics.pretokenization import pretokenizer
+from cs336_basics.converter import bytes2str, str2bytes
 
 # 初始化词表
 def initialize_vocab(special_tokens: list[str] ) -> dict[int,bytes]:
@@ -65,6 +68,46 @@ def bpe_merge(pretokens: dict ,current_vocabsize : int, vocab_size: int) -> tupl
 
     return merged_dict, merged_list
 
+def save_data(file_path1 : str, file_path2: str, vocab : dict[int, bytes], merges: list[tuple[bytes,bytes]]) -> None :
+    """
+    存储数据,形式与参考实例一样.
+    """
+    reversed_vocab = {}
+    for idx, bytes_ in vocab.items():
+        reversed_vocab[bytes2str(bytes_)] = idx
+
+    # store the vocabulary
+    with open(file_path1, "w", encoding= "utf-8") as f :
+        json.dump(reversed_vocab, f, ensure_ascii=False, indent=2)
+
+    # store the merge list
+    with open(file_path2, "w", encoding= "utf-8") as f :
+        for i in merges :
+            words = " ".join([bytes2str(i[0]), bytes2str(i[1])])
+            f.write(words)
+            f.write("\n")
+
+def read_data(file_path1: str, file_path2: str) -> tuple[dict[int, bytes],list[tuple[bytes, bytes]]]:
+    """
+    事实上是save data的逆, 从文件中读出vocab 和 merge list
+    """
+    # 读字典
+    with open(file_path1, "r", encoding= "utf-8") as f :
+        vocab = json.load(f)
+
+    vocab_ = dict(zip(vocab.values(),vocab.keys()))
+    for idx in vocab_ :
+        vocab_[idx] = str2bytes(vocab_[idx])
+    # 读merge list
+    merged_list = []
+    with open(file_path2, "r", encoding= "utf-8") as f :
+        for line in f :
+            line = line.rstrip('\r\n')
+            result = line.split(" ")
+            lst = [str2bytes(result[0]), str2bytes(result[1])]
+            merged_list.append(tuple(lst))
+
+    return vocab_, merged_list
 # 入口函数
 def train_bpe(input_path: str | os.PathLike,
               vocab_size: int,
@@ -82,10 +125,8 @@ def train_bpe(input_path: str | os.PathLike,
 
 
 def main():
-    vocab, merged_list = train_bpe("tests/fixtures/tinystories_sample_5M.txt", 500, ["<|endoftext|>"])
-    print(vocab)
-    print("----------------------")
-    print(merged_list)
+    vocab, merged_list = train_bpe("tests/fixtures/tinystories_sample_5M.txt", 10000, ["<|endoftext|>"])
+    save_data("cs336_basics/vocab.json","cs336_basics/merges.txt", vocab, merged_list)
     
 if __name__ == "__main__":
     main()
