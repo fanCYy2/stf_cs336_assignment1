@@ -17,54 +17,98 @@ def initialize_vocab(special_tokens: list[str] ) -> dict[int,bytes]:
     return vocab
 
 # 合并
-def bpe_merge(pretokens: dict ,current_vocabsize : int, vocab_size: int) -> tuple[dict,list]  :
-    # 将bytes变为元组
-    new_pretokens = defaultdict(int)
+def bpe_merge(pretokens: dict, current_vocabsize: int, vocab_size: int) -> tuple[dict, list]:
+    # 将输入 pretokens 转为内部稳定编号结构
+    # new_pretokens 现在按 id 存放当前 parts，id 就是下标
+    # 初始时先合并相同 parts 的频次，保持与原逻辑一致
+    temp_pretokens = defaultdict(int)
     for k, v in pretokens.items():
         parts = tuple(bytes([b]) for b in k)
-        new_pretokens[parts] += v
+        temp_pretokens[parts] += v
 
-    # 合并函数    
+    new_pretokens = []   # list[tuple[bytes, ...]]，id = 下标
+    freqs = []           # list[int]，与 new_pretokens 一一对应，表示该 pretoken 的频次
+
+    for parts, v in temp_pretokens.items():
+        new_pretokens.append(parts)
+        freqs.append(v)
+
+    # pair_to_ids: pair -> 包含该 pair 的 pretoken id 集合
+    # pair_freq: pair -> 加权出现次数（同一 pretoken 内出现多次要重复计数）
+    pair_to_ids = defaultdict(set)
+    pair_freq = Counter()
+
+    for pid, parts in enumerate(new_pretokens):
+        v = freqs[pid]
+        for pair in zip(parts, parts[1:]):
+            pair_to_ids[pair].add(pid)
+            pair_freq[pair] += v
+
+    # 合并函数：与原逻辑完全一致
     def merge_pair(parts, pair, merged):
         result = []
         i = 0
         while i < len(parts):
-            if i < len(parts) - 1 and parts[i] == pair[0] and parts[i+1] == pair[1]:
+            if i < len(parts) - 1 and parts[i] == pair[0] and parts[i + 1] == pair[1]:
                 result.append(merged)
                 i += 2
             else:
                 result.append(parts[i])
                 i += 1
         return tuple(result)
-    
+
     merged_list = []
     merged_dict = {}
-    while current_vocabsize < vocab_size :
-        # 统计频率
-        pair_freq = Counter()
-        for parts, v in new_pretokens.items() :
-            for pair in zip(parts, parts[1:]) :
-                pair_freq[pair] += v
 
-        if not pair_freq :
+    while current_vocabsize < vocab_size:
+        # 没有可合并的 pair 就结束
+        if not pair_freq:
             return merged_dict, merged_list
-        # 取最大字典序
+
+        # 取最大字典序：先按频率，再按 pair 本身
         max_pair, max_freq = max(
-        pair_freq.items(),
-        key=lambda kv: (kv[1], kv[0])
+            pair_freq.items(),
+            key=lambda kv: (kv[1], kv[0])
         )
         merged = max_pair[0] + max_pair[1]
+
         merged_list.append(tuple([max_pair[0], max_pair[1]]))
-
         merged_dict[current_vocabsize] = merged
-        updated_d = defaultdict(int)
-        for parts, v in new_pretokens.items():
-            new_parts = merge_pair(parts, max_pair, merged)
-            updated_d[new_parts] += v
 
-        new_pretokens = updated_d
+        # 只取出包含 max_pair 的 pretoken id 快照
+        ids = list(pair_to_ids.get(max_pair, set()))
+
+        for pid in ids:
+            old_parts = new_pretokens[pid]
+            new_parts = merge_pair(old_parts, max_pair, merged)
+
+            # 理论上包含 max_pair 一定会发生变化；这里做安全判断
+            if new_parts == old_parts:
+                continue
+
+            v = freqs[pid]
+
+            # 1) 从索引中移除旧 parts 的所有 pair 贡献
+            for pair in zip(old_parts, old_parts[1:]):
+                pair_freq[pair] -= v
+                if pair_freq[pair] == 0:
+                    del pair_freq[pair]
+
+                s = pair_to_ids.get(pair)
+                if s is not None:
+                    s.discard(pid)
+                    if not s:
+                        del pair_to_ids[pair]
+
+            # 2) 更新该 id 的 parts，编号保持不变
+            new_pretokens[pid] = new_parts
+
+            # 3) 把新 parts 的 pair 贡献加入索引
+            for pair in zip(new_parts, new_parts[1:]):
+                pair_freq[pair] += v
+                pair_to_ids[pair].add(pid)
+
         current_vocabsize += 1
-   
 
     return merged_dict, merged_list
 
@@ -125,7 +169,7 @@ def train_bpe(input_path: str | os.PathLike,
 
 
 def main():
-    vocab, merged_list = train_bpe("tests/fixtures/tinystories_sample_5M.txt", 10000, ["<|endoftext|>"])
+    vocab, merged_list = train_bpe("data/TinyStoriesV2-GPT4-train.txt", 10000, ["<|endoftext|>"])
     save_data("cs336_basics/vocab.json","cs336_basics/merges.txt", vocab, merged_list)
     
 if __name__ == "__main__":
